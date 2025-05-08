@@ -1,94 +1,95 @@
 import os
-import time
 import pandas as pd
-from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification, Trainer, TrainingArguments
-from transformers import pipeline
+from sklearn.model_selection import train_test_split
+from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification, Trainer, TrainingArguments, pipeline
+from datasets import Dataset
+import torch
 
-# Caminhos para os arquivos
-csv_file = "phishing.csv"
-last_modified_file = "last_modified.txt"
+# Caminho do dataset
+csv_path = "phishing.csv"
 
-# Função para verificar se o arquivo foi modificado
-def is_file_modified(file_path, last_modified_file):
-    try:
-        # Verifica a data de modificação do arquivo CSV
-        current_mod_time = os.path.getmtime(file_path)
-        
-        # Lê o timestamp da última modificação registrada
-        if os.path.exists(last_modified_file):
-            with open(last_modified_file, "r") as f:
-                last_mod_time = float(f.read().strip())
-        else:
-            last_mod_time = 0  # Se o arquivo não existir, significa que nunca foi registrado
+# Verifica se o usuário quer treinar o modelo
+train_choice = input("Deseja treinar o modelo novamente? (s/n): ").strip().lower()
 
-        # Compara as datas
-        if current_mod_time > last_mod_time:
-            # Atualiza o arquivo com o timestamp atual
-            with open(last_modified_file, "w") as f:
-                f.write(str(current_mod_time))
-            return True  # O arquivo foi modificado
-        return False  # O arquivo não foi modificado
-    except Exception as e:
-        print(f"Erro ao verificar o arquivo: {e}")
-        return False
+if train_choice == 's':
+    # Carrega os dados
+    df = pd.read_csv(csv_path)
 
-# Função para treinar o modelo
-def train_model():
-    print("Iniciando o treinamento...")
+    # Verifica se há as colunas esperadas
+    if 'Email Text' not in df.columns or 'Label' not in df.columns:
+        raise ValueError("O CSV deve conter as colunas 'Email Text' e 'Label'.")
 
-    # Carregar o dataset
-    df = pd.read_csv(csv_file)
-    df = df.dropna(subset=['text', 'label'])  # Remover valores nulos, se houver
+    # Divide os dados em treino e validação
+    train_texts, val_texts, train_labels, val_labels = train_test_split(
+        df["Email Text"].tolist(), df["Label"].tolist(), test_size=0.2
+    )
 
-    # Carregar o tokenizer
+    # Tokenização
     tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-uncased")
 
-    # Tokenize os dados
-    train_encodings = tokenizer(list(df['text']), truncation=True, padding=True)
-    train_labels = list(df['label'])
+    train_encodings = tokenizer(train_texts, truncation=True, padding=True)
+    val_encodings = tokenizer(val_texts, truncation=True, padding=True)
 
-    # Criar o modelo
+    # Conversão para Dataset
+    train_dataset = Dataset.from_dict({
+        'input_ids': train_encodings['input_ids'],
+        'attention_mask': train_encodings['attention_mask'],
+        'labels': train_labels
+    })
+
+    val_dataset = Dataset.from_dict({
+        'input_ids': val_encodings['input_ids'],
+        'attention_mask': val_encodings['attention_mask'],
+        'labels': val_labels
+    })
+
+    # Modelo
     model = DistilBertForSequenceClassification.from_pretrained("distilbert-base-uncased", num_labels=2)
 
-    # Configurar os parâmetros de treinamento
+    # Configuração de treino
     training_args = TrainingArguments(
-        output_dir="./results",          # Diretório de saída
-        num_train_epochs=3,              # Número de épocas
-        per_device_train_batch_size=8,   # Tamanho do lote
-        warmup_steps=500,                # Passos para o warmup
-        weight_decay=0.01,               # Decaimento de peso
-        logging_dir="./logs",            # Diretório de logs
-        no_cuda=True,                    # Usar apenas CPU
+        output_dir="./results",
+        num_train_epochs=3,
+        per_device_train_batch_size=4,
+        per_device_eval_batch_size=4,
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        logging_dir="./logs",
+        logging_steps=10,
+        use_cpu=True  # substituto de no_cuda=True
     )
 
-    # Criar o Trainer
     trainer = Trainer(
-        model=model,                         # O modelo
-        args=training_args,                  # Argumentos de treinamento
-        train_dataset=(train_encodings, train_labels),  # Dados de treinamento
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
     )
 
-    # Treinar o modelo
+    # Treinamento
     trainer.train()
 
-    return model, tokenizer
+    # Salva modelo e tokenizer
+    model.save_pretrained("./trained_model")
+    tokenizer.save_pretrained("./trained_model")
 
-# Função para classificar uma frase de phishing
-def classify_phrase(model, tokenizer):
-    classifier = pipeline("text-classification", model=model, tokenizer=tokenizer)
-    user_input = input("Digite uma frase para verificar se é phishing: ")
-    prediction = classifier(user_input)
-    print(f"Predição: {prediction}")
-
-# Verificar se o arquivo foi alterado
-if is_file_modified(csv_file, last_modified_file):
-    # Se o arquivo foi modificado, treinar o modelo novamente
-    model, tokenizer = train_model()
 else:
-    # Se o arquivo não foi modificado, carregar o modelo treinado previamente
-    print("O arquivo não foi modificado. Usando o modelo treinado previamente.")
-    model = DistilBertForSequenceClassification.from_pretrained("./results")
-    tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-uncased")
+    # Usa modelo previamente treinado
+    if not os.path.exists("./trained_model"):
+        raise FileNotFoundError("O modelo treinado não foi encontrado. Execute com treinamento pelo menos uma vez.")
 
-# Realizar a classificação com o modelo treinado
-classify_phrase(model, tokenizer)
+    model = DistilBertForSequenceClassification.from_pretrained("./trained_model")
+    tokenizer = DistilBertTokenizerFast.from_pretrained("./trained_model")
+
+# Pipeline de inferência
+classifier = pipeline("text-classification", model=model, tokenizer=tokenizer)
+
+# Entrada do usuário
+while True:
+    text = input("\nDigite o texto do email (ou 'sair' para encerrar): ")
+    if text.lower() == 'sair':
+        break
+    prediction = classifier(text)[0]
+    label = prediction['label']
+    score = prediction['score']
+    print(f"Predição: {label} (confiança: {score:.2%})")
