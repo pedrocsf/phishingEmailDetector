@@ -16,12 +16,12 @@ if train_choice == 's':
     df = pd.read_csv(csv_path)
 
     # Verifica se há as colunas esperadas
-    if 'Email Text' not in df.columns or 'Label' not in df.columns:
-        raise ValueError("O CSV deve conter as colunas 'Email Text' e 'Label'.")
+    if 'text' not in df.columns or 'label' not in df.columns:
+        raise ValueError("O CSV deve conter as colunas 'text' e 'label'.")
 
     # Divide os dados em treino e validação
     train_texts, val_texts, train_labels, val_labels = train_test_split(
-        df["Email Text"].tolist(), df["Label"].tolist(), test_size=0.2
+        df["text"].tolist(), df["label"].tolist(), test_size=0.2
     )
 
     # Tokenização
